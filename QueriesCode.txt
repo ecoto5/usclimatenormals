@@ -1,0 +1,16 @@
+SELECT city, state, MonthDay, dly_dutr FROM usclimatenormals ORDER by dly_dutr desc LIMIT 10;
+
+SELECT city, state, MonthDay, dly_dutr FROM usclimatenormals ORDER by dly_dutr asc LIMIT 10;
+
+Drop table if exists all_diurnal_ranges;
+CREATE TABLE IF NOT EXISTS all_diurnal_ranges
+As SELECT city, state, MonthDay, dly_dutr, latitude, longitude
+FROM usclimatenormals;
+
+
+
+INSERT OVERWRITE DIRECTORY '/user/yourusername/tmp/'
+ROW FORMAT DELIMITED FIELDS TERMINATED BY ','
+SELECT * FROM all_diurnal_ranges
+WHERE dly_dutr is NOT NULL AND state=’CA US’
+ORDER BY dly_dutr DESC;
