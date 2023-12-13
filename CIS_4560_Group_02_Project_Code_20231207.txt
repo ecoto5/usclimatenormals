@@ -1,0 +1,600 @@
+
+
+-- Connect to the cluster using the following ssh command in the following format: 
+
+$ ssh yourusername@your_server_ip 
+
+
+-- Download the dataset
+wget https://www.ncei.noaa.gov/data/normals-daily/1991-2020/archive/us-climate-normals_1991-2020_v1.0.1_daily_multivariate_by-station_c20230404.tar.gz
+
+-- Create a directory on the Linux System and move the dataset the this new directory
+mkdir normals_dly
+mv us-climate-normals_1991-2020_v1.0.1_daily_multivariate_by-station_c20230404.tar.gz normals_dly
+
+
+-- Unzip the dataset
+cd normals_dly
+
+tar -zxvf us-climate-normals_1991-2020_v1.0.1_daily_multivariate_by-station_c20230404.tar.gz
+
+
+-- to list the file number
+ls normals_dly | wc -l
+
+-- to delete files with size less than 560kb
+find -type f -size -560k -exec rm {} \;
+
+
+-- create a directory in HDFS 
+hdfs dfs -mkdir normals_dly_dataset
+
+
+-- change the directory to root
+cd
+-- upload the csv files under "normals_dly" to HDFS directory "normals_dly_dataset"
+hdfs dfs -put normals_dly/*.csv normals_dly_dataset
+
+
+-- check if files have been uploaded to the normals_dly_dataset folder of HDFS 
+hdfs dfs -cat normals_dly_dataset/USW00024020.csv | tail -3 
+
+-- We used the following codes to create tables for Heating Degree Days, Cooling Degree Days analysis, and tempo-spatial analysis.
+
+-- Create an external table to refer to the CSV files under directory of "normals_dly_dataset" 
+CREATE EXTERNAL TABLE IF NOT EXISTS normals_dly_raw
+(station_id STRING,
+record_date STRING,
+latitude STRING,
+longitude STRING,
+elevation STRING,
+station_name STRING,
+record_month STRING,
+record_day STRING,
+record_hour STRING,
+temperature STRING,
+v1 STRING,
+v2 STRING,
+v3 STRING,
+temp_max STRING,
+v5 STRING,
+v6 STRING,
+v7 STRING,
+temp_min STRING,
+v9 STRING,
+v10 STRING,
+v11 STRING,
+temp_range STRING,
+v13 STRING, v14 STRING, v15 STRING, v16 STRING, v17 STRING, v18 STRING, v19 STRING, v20 STRING, v21 STRING, v22 STRING,
+v23 STRING, v24 STRING, v25 STRING, v26 STRING, v27 STRING, v28 STRING, v29 STRING, v30 STRING, v31 STRING, htdd_dly STRING,
+v33 STRING, v34 STRING, htdd_years STRING, v36 STRING, v37 STRING, v38 STRING, v39 STRING, v40 STRING, v41 STRING, v42 STRING,
+v43 STRING, v44 STRING, v45 STRING, v46 STRING, v47 STRING, v48 STRING, v49 STRING, v50 STRING, v51 STRING, v52 STRING,
+v53 STRING, v54 STRING, v55 STRING, v56 STRING, v57 STRING, v58 STRING, v59 STRING, cldd_dly STRING, v61 STRING, v62 STRING,
+cldd_years STRING, v64 STRING, v65 STRING, v66 STRING, v67 STRING, v68 STRING, v69 STRING, v70 STRING, v71 STRING, v72 STRING,
+v73 STRING, v74 STRING, v75 STRING, v76 STRING, v77 STRING, v78 STRING, v79 STRING, v80 STRING, v81 STRING, v82 STRING,
+v83 STRING, v84 STRING, v85 STRING, v86 STRING, v87 STRING, v88 STRING, v89 STRING, v90 STRING, v91 STRING, v92 STRING,
+v93 STRING, v94 STRING, v95 STRING, v96 STRING, v97 STRING, v98 STRING, v99 STRING, v100 STRING, v101 STRING, v102 STRING,
+v103 STRING, v104 STRING, v105 STRING, v106 STRING, v107 STRING, v108 STRING, v109 STRING, v110 STRING, v111 STRING, v112 STRING,
+v113 STRING, v114 STRING, v115 STRING, v116 STRING, v117 STRING, v118 STRING, v119 STRING, v120 STRING, v121 STRING, v122 STRING,
+v123 STRING, v124 STRING, v125 STRING, v126 STRING, v127 STRING, v128 STRING, v129 STRING, v130 STRING, v131 STRING, v132 STRING,
+v133 STRING, v134 STRING, v135 STRING, v136 STRING, v137 STRING, v138 STRING, v139 STRING, prcp_dly STRING
+)
+ROW FORMAT SERDE 'org.apache.hadoop.hive.serde2.OpenCSVSerde'
+WITH SERDEPROPERTIES (
+   "separatorChar" = ",",
+   "quoteChar"     = "\""
+) 
+STORED AS TEXTFILE LOCATION '/user/jtang7/normals_dly_dataset'
+TBLPROPERTIES ('skip.header.line.count'='1', 'serialization.null.format'='');
+
+-- Clean data and create a table containing the cleaned values
+
+hdfs dfs -mkdir normals_dly_clean
+
+-- Create a table containing the cleaned data.
+CREATE TABLE IF NOT EXISTS normals_dly_clean
+--ROW FORMAT DELIMITED
+STORED AS TEXTFILE
+LOCATION '/user/jtang7/normals_dly_clean'
+AS SELECT 
+station_id,
+record_date,
+latitude,
+longitude,
+elevation,
+TRIM(SPLIT(station_name, ', ')[0]) AS station_name,
+TRIM(REGEXP_EXTRACT(SPLIT(station_name, ', ')[1], '(\\w+\\s)')) AS state,
+TRIM(REGEXP_EXTRACT(SPLIT(station_name, ', ')[1], '(\\s\\w+)')) AS country,
+record_month,
+record_day,
+record_hour,
+temperature,
+temp_max,
+temp_min,
+temp_range,
+htdd_dly,
+htdd_years,
+cldd_dly,
+cldd_years,
+prcp_dly
+FROM normals_dly_raw
+WHERE record_date NOT LIKE "02-29"; 
+
+-- Create tables which contain data for the states of California we want to analyze:
+
+CREATE TABLE IF NOT EXISTS records_ca
+ROW FORMAT DELIMITED
+FIELDS TERMINATED BY ','
+STORED AS TEXTFILE
+LOCATION '/user/jtang7/project_tables/records_ca'
+AS SELECT * FROM normals_dly_clean WHERE state = "CA";
+
+
+-- Create a table to calculate the total heating degree days and the total cooling degree days for each station.
+
+CREATE TABLE IF NOT EXISTS total_htdd_cldd_ca
+ROW FORMAT DELIMITED
+FIELDS TERMINATED BY ','
+STORED AS TEXTFILE
+LOCATION '/user/jtang7/project_tables/total_htdd_cldd_ca'
+AS
+SELECT station_id, latitude, longitude, elevation, station_name, ROUND(CAST(sum(htdd_dly) AS DOUBLE), 1) total_htdd, ROUND(CAST(sum(cldd_dly) AS DOUBLE), 1) total_cldd,
+ROUND((CAST(SUM(htdd_dly) AS DOUBLE)+ CAST(SUM(cldd_dly) AS DOUBLE)), 1) total_htdd_cldd
+FROM records_ca
+GROUP BY station_id, latitude, longitude, elevation, station_name;
+
+
+-- Create a table to label each day with corresponding temperature label.
+
+CREATE TABLE IF NOT EXISTS temp_level_ca
+ROW FORMAT DELIMITED
+FIELDS TERMINATED BY ','
+STORED AS TEXTFILE
+LOCATION '/user/jtang7/project_tables/temp_level_ca'
+AS
+SELECT station_id, latitude, longitude, elevation, station_name, temperature,
+case
+when temperature >= 105 then "very hot"
+when temperature >= 90 and temperature < 105 then "hot"
+when temperature >= 80 and temperature < 90 then "very warm"
+when temperature >= 65 and temperature < 80 then "warm"
+when temperature >= 50 and temperature < 65 then "cool"
+when temperature <50 then "cold"
+end as temp_level
+FROM records_ca;
+
+
+-- Create a table to calculate the day when the highest heating days occurred in each station.
+
+CREATE TABLE IF NOT EXISTS highest_heating_days_date_ca
+ROW FORMAT DELIMITED
+FIELDS TERMINATED BY ','
+STORED AS TEXTFILE
+LOCATION '/user/jtang7/project_tables/highest_heating_days_date_ca'
+AS
+SELECT rd.station_id, rd.latitude, rd.longitude, rd.elevation, rd.station_name, Min(rd.record_date), rd.htdd_dly
+FROM(
+SELECT r.station_id, r.latitude, r.longitude, r.elevation, r.station_name, r.record_date, r.htdd_dly
+FROM records_ca r
+WHERE r.htdd_dly = (select max(htdd_dly) from records_ca where station_id = r.station_id)
+)rd
+GROUP BY rd.station_id, rd.latitude, rd.longitude, rd.elevation, rd.station_name, rd.htdd_dly;
+
+
+-- Create a table to calculate the day when the highest cooling days occurred in each station.
+
+CREATE TABLE IF NOT EXISTS highest_cooling_days_date_ca
+ROW FORMAT DELIMITED
+FIELDS TERMINATED BY ','
+STORED AS TEXTFILE
+LOCATION '/user/jtang7/project_tables/highest_cooling_days_date_ca'
+AS
+SELECT rd.station_id, rd.latitude, rd.longitude, rd.elevation, rd.station_name, Min(rd.record_date), rd.cldd_dly
+FROM(
+SELECT r.station_id, r.latitude, r.longitude, r.elevation, r.station_name, r.record_date, r.cldd_dly
+FROM records_ca r
+WHERE cldd_dly = (select max(cldd_dly) from records_ca where station_id = r.station_id)
+)rd
+GROUP BY rd.station_id, rd.latitude, rd.longitude, rd.elevation, rd.station_name, rd.cldd_dly;
+
+
+-- Create a table to calculate the total heating degree days and the total cooling degree days for each day.
+
+CREATE TABLE IF NOT EXISTS total_htdd_cldd_perday_ca
+ROW FORMAT DELIMITED
+FIELDS TERMINATED BY ','
+STORED AS TEXTFILE
+LOCATION '/user/jtang7/project_tables/total_htdd_cldd_perday_ca'
+AS
+SELECT station_id, latitude, longitude, elevation, station_name, record_date, cldd_dly, htdd_dly,
+ROUND((cldd_dly + htdd_dly), 2) total_htdd_cldd
+FROM records_ca;
+
+
+-- The following codes for creating tables related to all states
+
+
+-- Create a table
+DROP TABLE IF EXISTS usclimatenormals;
+create external table if not exists usclimatenormals (STATION string, MonthDay string, 
+LATITUDE double, 
+LONGITUDE double, 
+ELEVATION double, 
+CITY string, 
+STATE string, 
+month int, 
+day int, 
+hr int, 
+DLY_TAVG double, 
+mflag1 string, 
+cflag1 string, 
+years_DLY_TAVG double,
+DLY_TMAX double, 
+mflag2 string, 
+cflag2 string,
+years_DLY_TMAX double,
+DLY_TMIN double,
+mflag3 string,
+cflag3 string,
+years_DLY_TMIN double,
+DLY_DUTR double,
+mflag4 string,
+cflag4 string,
+years_DLY_DUTR double,
+DLY_TAVG_STDDEV double,
+mflag5 string,
+cflag5 string,
+years_DLY_TAVG_STDDEV double,
+DLY_TMAX_STDDEV double,
+mflag6 string,
+cflag6 string,
+years_DLY_TMAX_STDDEV double,
+DLY_TMIN_STDDEV double,
+mflag7  string,
+cflag7 string,
+years_DLY_TMIN_STDDEV double,
+DLY_DUTR_STDDEV double,
+mflag8 string,
+cflag8 string,
+years_DLY_DUTR_STDDEV double,
+DLY_HTDD double,
+mflag9 string,
+cflag9 string,
+years_DLY_HTDD double,
+DLY_HTDD_BASE40 double,
+mflag10 string,
+cflag10 string,
+years_DLY_HTDD_BASE40 double,
+DLY_HTDD_BASE45 double,
+mflag11 string,
+cflag11 string,
+years_DLY_HTDD_BASE45 double,
+DLY_HTDD_BASE50 double,
+mflag12 string,
+cflag12 string,
+years_DLY_HTDD_BASE50 double,
+DLY_HTDD_BASE55 double,
+mflag13 string,
+cflag13 string,
+years_DLY_HTDD_BASE55 double,
+DLY_HTDD_BASE57 double,
+mflag14 string,
+cflag14 string,
+years_DLY_HTDD_BASE57 double,
+DLY_HTDD_BASE60 double,
+mflag15 string,
+cflag15 string,
+years_DLY_HTDD_BASE60 double,
+DLY_CLDD double,
+mflag16 string,
+cflag16 string,
+years_DLY_CLDD double,
+DLY_CLDD_BASE40 double,
+mflag17 string,
+cflag17 string,
+years_DLY_CLDD_BASE40 double,
+DLY_CLDD_BASE45 double,
+mflag18 string,
+cflag18 string,
+years_DLY_CLDD_BASE45 double,
+DLY_CLDD_BASE50 double,
+mflag19 string,
+cflag19 string,
+years_DLY_CLDD_BASE50 double,
+DLY_CLDD_BASE55 double,
+mflag20 string,
+cflag20 string,
+years_DLY_CLDD_BASE55 double,
+DLY_CLDD_BASE57 double,
+mflag21 string,
+cflag21 string,
+years_DLY_CLDD_BASE57 double,
+DLY_CLDD_BASE60 double,
+mflag22 string,
+cflag22 string,
+years_DLY_CLDD_BASE60 double,
+DLY_CLDD_BASE70 double,
+mflag23 string,
+cflag23 string,
+years_DLY_CLDD_BASE70 double,
+DLY_CLDD_BASE72 double,
+mflag23 string,
+cflag23 string,
+years_DLY_CLDD_BASE72 double,
+DLY_GRDD_BASE65 double,
+mflag24 string,
+cflag24 string,
+years_DLY_GRDD_BASE65 double,
+DLY_GRDD_BASE40 double,
+mflag25 string,
+cflag25 string,
+years_DLY_GRDD_BASE40 double,
+DLY_GRDD_BASE45 double,
+mflag26 string,
+cflag27 string,
+years_DLY_GRDD_BASE45 double,
+DLY_GRDD_BASE50 double,
+mflag28 string,
+cflag28 string,
+years_DLY_GRDD_BASE50 double,
+DLY_GRDD_BASE55 double,
+mflag29 string,
+cflag29 string,
+years_DLY_GRDD_BASE55 double,
+DLY_GRDD_BASE57 double,
+mflag30string,
+cflag30 string,
+years_DLY_GRDD_BASE57 double,
+DLY_GRDD_BASE60 double,
+mflag31 string,
+cflag31 string,
+years_DLY_GRDD_BASE60 double,
+DLY_GRDD_BASE70 double,
+mflag32 string,
+cflag32 string,
+years_DLY_GRDD_BASE70 double,
+DLY_GRDD_BASE72 double,
+mflag33 string,
+cflag33 string,
+years_DLY_GRDD_BASE72 double,
+DLY_GRDD_TB4886 double,
+mflag34 string,
+cflag34 string,
+years_DLY_GRDD_TB4886 double,
+DLY_GRDD_TB5086 double,
+mflag35 string,
+cflag35 string,
+years_DLY_GRDD_TB5086 double,
+DLY_PRCP_PCTALL_GE001HI double,
+mflag36 string,
+cflag36 string,
+years_DLY_PRCP_PCTALL_GE001HI double,
+DLY_PRCP_PCTALL_GE010HI double,
+mflag37 string,
+cflag37 string,
+years_DLY_PRCP_PCTALL_GE010HI double,
+DLY_PRCP_PCTALL_GE025HI double,
+mflag38 string,
+cflag38 string,
+years_DLY_PRCP_PCTALL_GE025HI double,
+DLY_PRCP_PCTALL_GE050HI double,
+mflag39 string,
+cflag39 string,
+years_DLY_PRCP_PCTALL_GE050HI double,
+DLY_PRCP_PCTALL_GE100HI double,
+mflag40 string,
+cflag40 string,
+years_DLY_PRCP_PCTALL_GE100HI double,
+DLY_PRCP_PCTALL_GE200HI double,
+mflag41 string,
+cflag41 string,
+years_DLY_PRCP_PCTALL_GE200HI double,
+DLY_PRCP_PCTALL_GE400HI double,
+mflag42 string,
+cflag42 string,
+years_DLY_PRCP_PCTALL_GE400HI double,
+DLY_PRCP_PCTALL_GE600HI double,
+mflag43 string,
+cflag43 string,
+years_DLY_PRCP_PCTALL_GE600HI double,
+DLY_PRCP_25PCTL double,
+mflag44 string,
+cflag44 string,
+years_DLY_PRCP_25PCTL double,
+DLY_PRCP_50PCTL double,
+mflag45 string,
+cflag45 string,
+years_DLY_PRCP_50PCTL double,
+DLY_PRCP_75PCTL double,
+mflag46 string,
+cflag46 string,
+years_DLY_PRCP_75PCTL double,
+MTD_PRCP double,
+mflag47 string,
+cflag47 string,
+years_MTD_PRCP double,
+YTD_PRCP double,
+mflag48 string,
+cflag48 string,
+years_YTD_PRCP double,
+DLY_SNOW_PCTALL_GE001TI double,
+mflag49 string,
+cflag49 string,
+years_DLY_SNOW_PCTALL_GE001TI double,
+DLY_SNOW_PCTALL_GE010TI double, 
+mflag50 string,
+cflag50 string,
+years_DLY_SNOW_PCTALL_GE010TI double,
+DLY_SNOW_PCTALL_GE020TI double,
+mflag51 string,
+cflag51 string,
+years_DLY_SNOW_PCTALL_GE020TI double,
+DLY_SNOW_PCTALL_GE030TI double,
+mflag52 string,
+cflag52 string,
+years_DLY_SNOW_PCTALL_GE030TI double,
+DLY_SNOW_PCTALL_GE040TI double,
+mflag53 string,
+cflag53 string,
+years_DLY_SNOW_PCTALL_GE040TI double,
+DLY_SNOW_PCTALL_GE050TI double,
+mflag54 string,
+cflag54 string,
+years_DLY_SNOW_PCTALL_GE050TI double,
+DLY_SNOW_PCTALL_GE100TI double,
+mflag55 string,
+cflag55 string,
+years_DLY_SNOW_PCTALL_GE100TI double,
+DLY_SNOW_PCTALL_GE200TI double,
+mflag56 string,
+cflag56 string,
+years_DLY_SNOW_PCTALL_GE200TI double,
+MTD_SNOW double,
+mflag57 string,
+cflag57 string,
+years_MTD_SNOW double,
+YTD_SNOW double,
+mflag58 string,
+cflag58 string,
+years_YTD_SNOW double,
+DLY_SNWD_PCTALL_GE001WI double,
+mflag59 string,
+cflag59 string,
+years_DLY_SNWD_PCTALL_GE001WI double,
+DLY_SNWD_PCTALL_GE002WI double,
+mflag60 string,
+cflag60 string,
+years_DLY_SNWD_PCTALL_GE002WI double,
+DLY_SNWD_PCTALL_GE003WI double,
+mflag61 string,
+cflag61 string,
+years_DLY_SNWD_PCTALL_GE003WI double,
+DLY_SNWD_PCTALL_GE004WI double,
+mflag62 string,
+cflag62 string,
+years_DLY_SNWD_PCTALL_GE004WI double,
+DLY_SNWD_PCTALL_GE005WI double,
+mflag63 string,
+cflag63 string,
+years_DLY_SNWD_PCTALL_GE005WI double,
+DLY_SNWD_PCTALL_GE010WI double,
+mflag64 string,
+cflag64 string,
+years_DLY_SNWD_PCTALL_GE010WI double,
+DLY_SNWD_PCTALL_GE020WI double,
+mflag65 string,
+cflag65 string,
+years_DLY_SNWD_PCTALL_GE020W double
+)
+ROW FORMAT DELIMITED FIELDS TERMINATED BY ','
+STORED AS TEXTFILE LOCATION '/user/ecoto5/ClimateNormals/data'
+TBLPROPERTIES ('skip.header.line.count'='1');
+
+--Creating a table for just diurnal temperatures
+Drop table if exists all_diurnal_ranges;
+CREATE TABLE IF NOT EXISTS all_diurnal_ranges
+As SELECT city, state, MonthDay, dly_dutr, latitude, longitude
+FROM usclimatenormals;
+
+--Create an output file for all states diurnal temperature. 
+INSERT OVERWRITE DIRECTORY '/user/yourusername/tmp/'
+ROW FORMAT DELIMITED FIELDS TERMINATED BY ','
+SELECT * FROM all_diurnal_ranges
+WHERE dly_dutr is NOT NULL AND MonthDay='Jul-1'
+ORDER BY dly_dutr DESC;
+
+--Creating an output file from the table specifying certain conditions.
+INSERT OVERWRITE DIRECTORY '/user/yourusername/tmp/'
+ROW FORMAT DELIMITED FIELDS TERMINATED BY ','
+SELECT * FROM all_diurnal_ranges
+WHERE dly_dutr is NOT NULL AND state='CA US' AND MonthDay='Jul-1'
+ORDER BY dly_dutr DESC;
+
+
+-- We used the following codes to craete tables for temperature-related analysis
+
+DROP TABLE IF EXISTS usclimatenormals;  
+
+CREATE EXTERNAL TABLE IF NOT EXISTS usclimatenormals (STATION string, MonthDay string, LATITUDE double, LONGITUDE double, ELEVATION double, CITY string, STATE string, month int, day int, hr int, DLY_TAVG double, mflag_DLY_TAVG string, cflag_DLY_TAVG string, years_DLY_TAVG double, DLY_TMAX double, mflag_DLY_TMAX string, cflag_DLY_TMAX string, years_DLY_TMAX double, DLY_TMIN double, mflag_DLY_TMIN string, cflag_DLY_TMIN string, years_DLY_TMIN double, DLY_DUTR double, mflag_DLY_DUTR string, cflag_DLY_DUTR string, years_DLY_TAVG_STDDEV double, mflag_DLY_TAVG_STDDEV string, cflag_DLY_TAVG_STDDEV string, DLY_TMAX_STDDEV double, mflag_DLY_TMAX_STDDEV string, cflag_DLY_TMAX_STDDEV string, years_DLY_TMAX_STDDEV double, DLY_TMIN_STDDEV double, mflag_DLY_TMIN_STDDEV string, cflag_DLY_TMIN_STDDEV string, years_DLY_TMIN_STDDEV double, DLY_DUTR_STDDEV double, mflag_DLY_DUTR_STDDEV string, cflag_DLY_DUTR_STDDEV string, years_DLY_DUTR_STDDEV double, DLY_HTDD double, mflag_DLY_HTDD string, cflag_DLY_HTDD string, years_DLY_HTDD double, DLY_HTDD_BASE40 double, mflag_DLY_HTDD_BASE40 string, cflag_DLY_HTDD_BASE40 string, years_DLY_HTDD_BASE40 double, DLY_HTDD_BASE45 double, mflag_DLY_HTDD_BASE45 string, cflag_DLY_HTDD_BASE45 string, years_DLY_HTDD_BASE45 double, DLY_HTDD_BASE50 double, mflag_DLY_HTDD_BASE50 string, cflag_DLY_HTDD_BASE50 string, years_DLY_HTDD_BASE50 double, DLY_HTDD_BASE55 double, mflag_DLY_HTDD_BASE55 string, cflag_DLY_HTDD_BASE55 string, years_DLY_HTDD_BASE55 double, DLY_HTDD_BASE57 double, mflag_DLY_HTDD_BASE57 string, cflag_DLY_HTDD_BASE57 string, years_DLY_HTDD_BASE57 double, DLY_HTDD_BASE60 double, mflag_DLY_HTDD_BASE60 string, cflag_DLY_HTDD_BASE60 string, years_DLY_HTDD_BASE60 double, DLY_CLDD double, mflag_DLY_CLDD string, cflag_DLY_CLDD string, years_DLY_CLDD double, DLY_CLDD_BASE40 double, mflag_DLY_CLDD_BASE40 string, cflag_DLY_CLDD_BASE40 string, years_DLY_CLDD_BASE40 double, DLY_CLDD_BASE45 double, mflag_DLY_CLDD_BASE45 string, cflag_DLY_CLDD_BASE45 string, years_DLY_CLDD_BASE45 double, DLY_CLDD_BASE50 double, mflag_DLY_CLDD_BASE50 string, cflag_DLY_CLDD_BASE50 string, years_DLY_CLDD_BASE50 double, DLY_CLDD_BASE55 double, mflag_DLY_CLDD_BASE55 string, cflag_DLY_CLDD_BASE55 string, years_DLY_CLDD_BASE55 double, DLY_CLDD_BASE57 double, mflag_DLY_CLDD_BASE57 string, cflag_DLY_CLDD_BASE57 string, years_DLY_CLDD_BASE57 double, DLY_CLDD_BASE60 double, mflag_DLY_CLDD_BASE60 string, cflag_DLY_CLDD_BASE60 string, years_DLY_CLDD_BASE60 double, DLY_CLDD_BASE70 double, mflag_DLY_CLDD_BASE70 string, cflag_DLY_CLDD_BASE70 string, years_DLY_CLDD_BASE70 double, DLY_CLDD_BASE72 double, mflag_DLY_CLDD_BASE72 string, cflag_DLY_CLDD_BASE72 string, years_DLY_CLDD_BASE72 double, DLY_GRDD_BASE65 double, mflag_DLY_GRDD_BASE65 string, cflag_DLY_GRDD_BASE65 string, years_DLY_GRDD_BASE65 double, DLY_GRDD_BASE40 double, mflag_DLY_GRDD_BASE40 string, cflag_DLY_GRDD_BASE40 string, years_DLY_GRDD_BASE40 double, DLY_GRDD_BASE45 double, mflag_DLY_GRDD_BASE45 string, cflag_DLY_GRDD_BASE45 string, years_DLY_GRDD_BASE45 double, DLY_GRDD_BASE50 double, mflag_DLY_GRDD_BASE50 string, cflag_DLY_GRDD_BASE50 string, years_DLY_GRDD_BASE50 double, DLY_GRDD_BASE55 double, mflag_DLY_GRDD_BASE55 string, cflag_DLY_GRDD_BASE55 string, years_DLY_GRDD_BASE55 double, DLY_GRDD_BASE57 double, mflag_DLY_GRDD_BASE57 string, cflag_DLY_GRDD_BASE57 string, years_DLY_GRDD_BASE57 double, DLY_GRDD_BASE60 double, mflag_DLY_GRDD_BASE60 string, cflag_DLY_GRDD_BASE60 string, years_DLY_GRDD_BASE60 double, DLY_GRDD_BASE70 double, mflag_DLY_GRDD_BASE70 string, cflag_DLY_GRDD_BASE70 string, years_DLY_GRDD_BASE70 double, DLY_GRDD_BASE72 double, mflag_DLY_GRDD_BASE72 string, cflag_DLY_GRDD_BASE72 string, years_DLY_GRDD_BASE72 double, DLY_GRDD_TB4886 double, mflag_DLY_GRDD_TB4886 string, cflag_DLY_GRDD_TB4886 string, years_DLY_GRDD_TB4886 double, DLY_GRDD_TB5086 double, mflag_DLY_GRDD_TB5086 string, cflag_DLY_GRDD_TB5086 string, years_DLY_GRDD_TB5086 double, DLY_PRCP_PCTALL_GE001HI double, mflag_DLY_PRCP_PCTALL_GE001HI string, cflag_DLY_PRCP_PCTALL_GE001HI string, years_DLY_PRCP_PCTALL_GE001HI double, DLY_PRCP_PCTALL_GE010HI double, mflag_DLY_PRCP_PCTALL_GE010HI string, cflag_DLY_PRCP_PCTALL_GE010HI string, years_DLY_PRCP_PCTALL_GE010HI double, DLY_PRCP_PCTALL_GE025HI double, mflag_DLY_PRCP_PCTALL_GE025HI string, cflag_DLY_PRCP_PCTALL_GE025HI string, years_DLY_PRCP_PCTALL_GE025HI double, DLY_PRCP_PCTALL_GE050HI double, mflag_DLY_PRCP_PCTALL_GE050HI string, cflag_DLY_PRCP_PCTALL_GE050HI string, years_DLY_PRCP_PCTALL_GE050HI double, DLY_PRCP_PCTALL_GE100HI double, mflag_DLY_PRCP_PCTALL_GE100HI string, cflag_DLY_PRCP_PCTALL_GE100HI string, years_DLY_PRCP_PCTALL_GE100HI double, DLY_PRCP_PCTALL_GE200HI double, mflag_DLY_PRCP_PCTALL_GE200HI string, cflag_DLY_PRCP_PCTALL_GE200HI string, years_DLY_PRCP_PCTALL_GE200HI double, DLY_PRCP_PCTALL_GE400HI double, mflag_DLY_PRCP_PCTALL_GE400HI string, cflag_DLY_PRCP_PCTALL_GE400HI string, years_DLY_PRCP_PCTALL_GE400HI double, DLY_PRCP_PCTALL_GE600HI double, mflag_DLY_PRCP_PCTALL_GE600HI string, cflag_DLY_PRCP_PCTALL_GE600HI string, years_DLY_PRCP_PCTALL_GE600HI double, DLY_PRCP_25PCTL double, mflag_DLY_PRCP_25PCTL string, cflag_DLY_PRCP_25PCTL string, years_DLY_PRCP_25PCTL double, DLY_PRCP_50PCTL double, mflag_DLY_PRCP_50PCTL string, cflag_DLY_PRCP_50PCTL string, years_DLY_PRCP_50PCTL double, DLY_PRCP_75PCTL double, mflag_DLY_PRCP_75PCTL string, cflag_DLY_PRCP_75PCTL string, years_DLY_PRCP_75PCTL double, MTD_PRCP double, mflag_MTD_PRCP string, cflag_MTD_PRCP string, years_MTD_PRCP double, YTD_PRCP double, mflag_YTD_PRCP string, cflag_YTD_PRCP string, years_YTD_PRCP double, DLY_SNOW_PCTALL_GE001TI double, mflag_DLY_SNOW_PCTALL_GE001TI string, cflag_DLY_SNOW_PCTALL_GE001TI string, years_DLY_SNOW_PCTALL_GE001TI double, DLY_SNOW_PCTALL_GE010TI double, mflag_DLY_SNOW_PCTALL_GE010TI string, cflag_DLY_SNOW_PCTALL_GE010TI string, years_DLY_SNOW_PCTALL_GE010TI double, DLY_SNOW_PCTALL_GE020TI double, mflag_DLY_SNOW_PCTALL_GE020TI string, cflag_DLY_SNOW_PCTALL_GE020TI string, years_DLY_SNOW_PCTALL_GE020TI double, DLY_SNOW_PCTALL_GE030TI double, mflag_DLY_SNOW_PCTALL_GE030TI string, cflag_DLY_SNOW_PCTALL_GE030TI string, years_DLY_SNOW_PCTALL_GE030TI double, DLY_SNOW_PCTALL_GE040TI double, mflag_DLY_SNOW_PCTALL_GE040TI string, cflag_DLY_SNOW_PCTALL_GE040TI string, years_DLY_SNOW_PCTALL_GE040TI double, DLY_SNOW_PCTALL_GE050TI double, mflag_DLY_SNOW_PCTALL_GE050TI string, cflag_DLY_SNOW_PCTALL_GE050TI string, years_DLY_SNOW_PCTALL_GE050TI double, DLY_SNOW_PCTALL_GE100TI double, mflag_DLY_SNOW_PCTALL_GE100TI string, cflag_DLY_SNOW_PCTALL_GE100TI string, years_DLY_SNOW_PCTALL_GE100TI double, DLY_SNOW_PCTALL_GE200TI double, mflag_DLY_SNOW_PCTALL_GE200TI string, cflag_DLY_SNOW_PCTALL_GE200TI string, years_DLY_SNOW_PCTALL_GE200TI double, MTD_SNOW double, mflag_MTD_SNOW string, cflag_MTD_SNOW string, years_MTD_SNOW double, YTD_SNOW double, mflag_YTD_SNOW string, cflag_YTD_SNOW string, years_YTD_SNOW double, DLY_SNWD_PCTALL_GE001WI double, mflag_DLY_SNWD_PCTALL_GE001WI string, cflag_DLY_SNWD_PCTALL_GE001WI string, years_DLY_SNWD_PCTALL_GE001WI double, DLY_SNWD_PCTALL_GE002WI double, mflag_DLY_SNWD_PCTALL_GE002WI string, cflag_DLY_SNWD_PCTALL_GE002WI string, years_DLY_SNWD_PCTALL_GE002WI double, DLY_SNWD_PCTALL_GE003WI double, mflag_DLY_SNWD_PCTALL_GE003WI string, cflag_DLY_SNWD_PCTALL_GE003WI string, years_DLY_SNWD_PCTALL_GE003WI double, DLY_SNWD_PCTALL_GE004WI double, mflag_DLY_SNWD_PCTALL_GE004WI string, cflag_DLY_SNWD_PCTALL_GE004WI string, years_DLY_SNWD_PCTALL_GE004WI double, DLY_SNWD_PCTALL_GE005WI double, mflag_DLY_SNWD_PCTALL_GE005WI string, cflag_DLY_SNWD_PCTALL_GE005WI string, years_DLY_SNWD_PCTALL_GE005WI double, DLY_SNWD_PCTALL_GE010WI double, mflag_DLY_SNWD_PCTALL_GE010WI string, cflag_DLY_SNWD_PCTALL_GE010WI string, years_DLY_SNWD_PCTALL_GE010WI double, DLY_SNWD_PCTALL_GE020WI double, mflag_DLY_SNWD_PCTALL_GE020WI string, cflag_DLY_SNWD_PCTALL_GE020WI string, years_DLY_SNWD_PCTALL_GE020W double)  
+
+ROW FORMAT DELIMITED FIELDS TERMINATED BY ','  
+
+STORED AS TEXTFILE LOCATION '/user/jmarias/ClimateNormals/data'  
+
+TBLPROPERTIES ('skip.header.line.count'='1'); 
+
+
+
+
+
+SELECT state, city, DLY_TMAX
+FROM (
+    SELECT state, city, DLY_TMAX,
+           ROW_NUMBER() OVER (PARTITION BY city ORDER BY DLY_TMAX DESC) as rn
+    FROM usclimatenormals
+) ranked
+WHERE rn = 1
+ORDER BY DLY_TMAX DESC
+LIMIT 10;
+
+
+
+
+
+
+SELECT state, city, DLY_TMIN
+FROM (
+    SELECT state, city, DLY_TMIN,
+           ROW_NUMBER() OVER (PARTITION BY city ORDER BY DLY_TMIN ASC) as rn
+    FROM usclimatenormals
+) ranked
+WHERE rn = 1
+ORDER BY DLY_TMIN ASC
+LIMIT 10;
+
+
+
+
+
+
+SELECT state, city, DLY_TMAX
+FROM (
+    SELECT state, city, DLY_TMAX,
+           ROW_NUMBER() OVER (PARTITION BY state, city ORDER BY DLY_TMAX ASC) as rn
+    FROM usclimatenormals
+) ranked
+WHERE rn = 1
+ORDER BY DLY_TMAX ASC
+LIMIT 10;
+
+
+
+
+Drop table if exists DLY_TMAX; 
+
+CREATE TABLE IF NOT EXISTS DLY_TMA
+
+As SELECT city, state, MonthDay, DLY_TMAX, DLY_TMIN, latitude, longitude 
+
+FROM usclimatenormals; 
+
+
+INSERT OVERWRITE DIRECTORY '/user/jmarias/tmp/'
+ROW FORMAT DELIMITED FIELDS TERMINATED BY ','
+SELECT
+  city,
+  state,
+  MonthDay,
+  DLY_TMAX,
+  DLY_TMIN
+FROM DLY_TMA
+WHERE DLY_TMAX IS NOT NULL
+ORDER BY DLY_TMAX DESC;
+
+
+
+hdfs dfs -ls tmp/
+hdfs dfs -cat tmp/000000_0 | tail -n 2
+hdfs dfs -get tmp/000000_0 max.csv
+ cat max.csv | tail -n 2
+scp jmarias@129.146.90.117:/home/jmarias/max.csv .
